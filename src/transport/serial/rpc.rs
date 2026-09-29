@@ -104,19 +104,31 @@ impl SerialRpcTransport {
     /// ```
     #[cfg_attr(feature = "tracing", tracing::instrument)]
     pub fn new<S: AsRef<str> + std::fmt::Debug>(port: S) -> Result<Self> {
+        Self::with_timeout(port, TIMEOUT)
+    }
+
+    /// Same as `new`, but with an explicit read timeout instead of the
+    /// crate's default. FlipperUI uses a short timeout so its worker thread
+    /// can poll for new commands between screen-stream frames without a
+    /// dedicated reader thread.
+    #[cfg_attr(feature = "tracing", tracing::instrument)]
+    pub fn with_timeout<S: AsRef<str> + std::fmt::Debug>(
+        port: S,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
         let mut port = serialport::new(port.as_ref(), FLIPPER_BAUD)
-            .timeout(TIMEOUT)
+            .timeout(timeout)
             .open()?;
 
         trace!("draining(prompt)");
-        drain_until_str(&mut port, ">: ", TIMEOUT)?;
+        drain_until_str(&mut port, ">: ", timeout)?;
 
         trace!("start_rpc_session");
         port.write_all("start_rpc_session\r".as_bytes())?;
         port.flush()?;
 
         trace!("draining(start_rpc_session, \\n)");
-        drain_until(&mut port, b'\n', TIMEOUT)?;
+        drain_until(&mut port, b'\n', timeout)?;
 
         Ok(Self {
             command_index: 0,

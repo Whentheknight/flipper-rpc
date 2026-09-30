@@ -15,6 +15,13 @@ pub(crate) const FLIPPER_BAUD: u32 = 115_200;
 /// process
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// USB vendor ID Flipper Devices Inc. ships on the Flipper Zero's CDC-ACM
+/// interface (an STMicroelectronics-block ID, since the Flipper uses an
+/// STM32 MCU for USB).
+const FLIPPER_USB_VID: u16 = 0x0483;
+/// USB product ID for the Flipper Zero's CDC-ACM interface.
+const FLIPPER_USB_PID: u16 = 0x5740;
+
 /// A flipper device. Contains port and device name;
 #[derive(Debug)]
 pub struct FlipperDevice {
@@ -26,7 +33,14 @@ pub struct FlipperDevice {
 
 /// Lists all flippers connected to the current system
 ///
-/// Scans ports and filters by manufacturer name == "Flipper Devices Inc."
+/// A port is a Flipper if its USB manufacturer string reads "Flipper
+/// Devices Inc." or its vendor/product ID matches the Flipper Zero's. The
+/// VID/PID check is required as a fallback: on Windows, a port using the
+/// stock `usbser.sys` driver (the normal driver for this device — no
+/// separate INF ships for it) reports the *driver's* registry-provided
+/// manufacturer string instead of the device's own USB descriptor string,
+/// so the manufacturer-string check alone never matches there. VID/PID is
+/// read from the USB descriptor directly and isn't affected by this.
 #[cfg_attr(feature = "tracing", tracing::instrument)]
 pub fn list_flipper_ports() -> Result<Vec<FlipperDevice>, serialport::Error> {
     debug!("scanning ports");
@@ -38,14 +52,15 @@ pub fn list_flipper_ports() -> Result<Vec<FlipperDevice>, serialport::Error> {
         .filter_map(|port| {
             debug!("{}", port.port_name);
             if let serialport::SerialPortType::UsbPort(usb_info) = port.port_type {
-                if usb_info.manufacturer.as_deref() == Some("Flipper Devices Inc.") {
-                    if let Some(product) = usb_info.product {
-                        debug!("└── is flipper");
-                        return Some(FlipperDevice {
-                            port_name: port.port_name,
-                            device_name: product,
-                        });
-                    }
+                let is_flipper = usb_info.manufacturer.as_deref() == Some("Flipper Devices Inc.")
+                    || (usb_info.vid == FLIPPER_USB_VID && usb_info.pid == FLIPPER_USB_PID);
+                if is_flipper {
+                    let device_name = usb_info.product.unwrap_or_else(|| "Flipper".to_string());
+                    debug!("└── is flipper");
+                    return Some(FlipperDevice {
+                        port_name: port.port_name,
+                        device_name,
+                    });
                 }
             }
             debug!("└── is not flipper");

@@ -118,7 +118,16 @@ impl SerialRpcTransport {
     ) -> Result<Self> {
         let mut port = serialport::new(port.as_ref(), FLIPPER_BAUD)
             .timeout(timeout)
+            .dtr_on_open(true)
             .open()?;
+        // DTR alone was enough to reproduce the Flipper's CLI banner in
+        // manual testing, but RTS is asserted too since the Flipper's
+        // firmware doesn't document which control line it actually checks,
+        // and `dtr_on_open` has no RTS equivalent on the builder — it must
+        // be set on the opened port instead. On Linux, DTR is asserted
+        // automatically on open regardless of this setting (see the crate's
+        // `dtr_on_open` docs), which is why this was never hit there.
+        port.write_request_to_send(true)?;
 
         trace!("draining(prompt)");
         drain_until_str(&mut port, ">: ", timeout)?;
@@ -146,6 +155,15 @@ impl SerialRpcTransport {
             command_index: 0,
             port,
         })
+    }
+
+    /// Changes the port's read timeout after construction. Useful for a
+    /// caller that needs a longer timeout during the initial handshake
+    /// (`with_timeout`'s CLI-prompt wait and `start_rpc_session` round
+    /// trip) than it wants for later reads, since the two have very
+    /// different latency characteristics.
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) -> Result<()> {
+        self.port.set_timeout(timeout).map_err(Error::Serialport)
     }
 }
 

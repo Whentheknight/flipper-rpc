@@ -72,14 +72,51 @@ impl SerialCliTransport {
     /// The above errors occur after a 2 second timeout
     #[cfg_attr(feature = "tracing", tracing::instrument)]
     pub fn new<S: AsRef<str> + std::fmt::Debug>(port: S) -> Result<Self> {
+        Self::with_timeout(port, TIMEOUT)
+    }
+
+    /// Same as `new`, but with an explicit read timeout instead of the
+    /// crate's default — mirrors `SerialRpcTransport::with_timeout`, for
+    /// the same reason: a caller polling for output between commands wants
+    /// a much shorter timeout than the initial prompt-wait needs.
+    #[cfg_attr(feature = "tracing", tracing::instrument)]
+    pub fn with_timeout<S: AsRef<str> + std::fmt::Debug>(
+        port: S,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
         let mut port = serialport::new(port.as_ref(), FLIPPER_BAUD)
-            .timeout(TIMEOUT)
+            .timeout(timeout)
+            .dtr_on_open(true)
             .open()?;
+        // Same fix as SerialRpcTransport::with_timeout (rpc.rs) and for the
+        // same reason: DTR alone reproduced the Flipper's CLI banner in
+        // manual testing, but RTS is asserted too since the firmware
+        // doesn't document which control line it actually checks, and
+        // `dtr_on_open` has no RTS equivalent on the builder.
+        port.write_request_to_send(true)?;
 
         debug!("Draining port until prompt");
-        drain_until_str(&mut port, ">: ", TIMEOUT)?;
+        drain_until_str(&mut port, ">: ", timeout)?;
 
         Ok(Self { port })
+    }
+
+    /// Changes the port's read timeout after construction — used to drop
+    /// from the handshake's generous timeout to a short poll interval once
+    /// connected, same pattern as `SerialRpcTransport::set_timeout`.
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) -> Result<()> {
+        self.port.set_timeout(timeout).map_err(Error::Serialport)
+    }
+
+    /// Sends a single ETX byte (0x03 / Ctrl+C), with no trailing `\r` —
+    /// matches the firmware's own interrupt check
+    /// (`cli_is_pipe_broken_or_is_etx_next_char`, confirmed in
+    /// `applications/main/subghz/subghz_cli.c`, tag 1.4.3) for breaking out
+    /// of a looping command like `subghz rx`.
+    pub fn interrupt(&mut self) -> Result<()> {
+        self.port.write_all(&[0x03])?;
+        self.port.flush()?;
+        Ok(())
     }
 
     /// Converts a SerialCliTransport into a SerialRpcTransport

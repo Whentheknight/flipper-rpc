@@ -23,6 +23,7 @@
 use crate::error::Error;
 use crate::transport::serial::{TIMEOUT, helpers::drain_until_str};
 use crate::{error::Result, logging::debug};
+use std::io::{ErrorKind, Read};
 
 use crate::logging::trace;
 use serialport::SerialPort;
@@ -117,6 +118,34 @@ impl SerialCliTransport {
         self.port.write_all(&[0x03])?;
         self.port.flush()?;
         Ok(())
+    }
+
+    /// A single bounded read: issues exactly one underlying `read()` call
+    /// and returns immediately with whatever bytes came back (an empty
+    /// string if none arrived within the configured timeout) — unlike
+    /// `Transport::receive` below, which drains in a loop until a gap of
+    /// silence and so can block for an unbounded stretch under
+    /// continuous output (e.g. a `subghz rx` capture streaming many
+    /// packets back to back). A caller polling this in a loop — the CLI
+    /// session's read branch in FlipperUI's worker — gets the same
+    /// one-chunk-per-poll responsiveness as the RPC streaming branch's
+    /// `poll_receive`, confirmed against real hardware to fix a laggy
+    /// Stop-button response during a `subghz rx` burst.
+    ///
+    /// CLI output here is the Flipper's text console — not guaranteed to
+    /// land on a UTF-8 character boundary if a multi-byte character
+    /// happens to straddle a single read's boundary. `from_utf8_lossy`
+    /// degrades that rare case to a replacement character rather than
+    /// erroring the whole read; this console's output is overwhelmingly
+    /// ASCII in practice.
+    pub fn receive_once(&mut self) -> Result<String> {
+        let mut buf = [0u8; 4096];
+        match self.port.read(&mut buf) {
+            Ok(0) => Ok(String::new()),
+            Ok(n) => Ok(String::from_utf8_lossy(&buf[..n]).into_owned()),
+            Err(ref e) if e.kind() == ErrorKind::TimedOut => Ok(String::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Converts a SerialCliTransport into a SerialRpcTransport
